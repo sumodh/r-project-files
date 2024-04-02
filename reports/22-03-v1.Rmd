@@ -1,0 +1,568 @@
+---
+title: "Exploratory Analysis of Cyclistic Bike-share data: how Casual and Member riders
+  are similar and different in their mobility needs"
+author: "Sumodh Dhungana"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    highlight: espresso
+    theme: cosmo
+    css: ~/repos/01_r_project/style1.css
+  pdf_document: default
+---
+
+
+## Introduction
+
+This is a Case-Study prepared as a part of 'Google Data Analytics Professional Certificate' Program on Coursera, a global online course provider.
+ 
+ **The situation** <br>
+ Cyclistic, a fictional bike-share service company, categorizes its customers as 'Casual' and 'Member' riders, based on 
+ its service pricing plans. 'Casual riders' purchase single or full day passes and  'Members' have purchased annual 
+ membership subscription. <br>
+ 
+ Until now, Cyclistic’s marketing strategy has been building general awareness and appealing to broad consumer 
+ segments through their flexible pricing plans: single-ride passes, full-day passes, and annual memberships. Pricing 
+ flexibility has been  very effective in attracting more customers. However, Morenao,the director  of marketing, 
+ believes converting casuals to members  will be key to future growth. Also, Cyclistic finance analyst have concluded that annual members are much more profitable than casual riders.
+ 
+ Morenao is responsible for the development of campaigns and initiatives to promote the bike-share program. She wants to
+ create a marketing campaign that targets 'Casuals'. She sees it as more cost effective than creating a marketing 
+ campaign for all new customers, as Casual riders are already aware of Cyclistic program. These may include email, 
+ social  media, and other channels. However first, 'Cyclistic executives' must approve the campaign design 
+ recommendations, so they must be backed up with  compelling data insights and professional data visualizations. <br>
+ 
+ 
+ **Analysis goal** <br>
+
+ The goal is to analyze Customer Bike-share data, gain insights into Customer behavior and communicate them effectively 
+ through visualizations. :<br>
+ 1. How casual and member riders use Cyclistic bikes? <br>
+ 2. Why should casual riders buy Cyclistic annual membership? <br>
+ 3. How can Cyclistic use digital media to influence riders? <br>
+
+The insights will guide the 'marketing team', directed by 'Lily Morenao', to design  new marketing strategies to convert 'Casual' riders into annual members.
+
+ 
+
+## Data Preparation 
+
+The data used in the analysis is stored in multiple Excel 'csv' files on a Amazon s3 bucket and is shared by 'Motivate International inc' under a license. The data is Cyclistic’s historical trip data in the past 12 months and is in files with 13 columns each and about more than 5 million rows altogether.
+[The data can be accessed by using the link](https://divvy-tripdata.s3.amazonaws.com/index.html) <br>
+
+The data are of character, date-time and double types. The character or string data type columns are identifiers of rides and  docking stations and customer types.The data excludes personal and financial details to address privacy issues. <br>
+
+The data is current (as recent as 02/2024), original and reliable as it is from a company directly involved in managing micromobility. However, we can not be sure that it is complete and unbiased. Also, it lacks demograhics, such as age and gender, useful in designing successful marketing campaigns. Some critical information, such as the weather conditions, cost of 'subscription' or 'single' or 'full day' passes are also missing. <br>
+
+
+I use R-Studio as my coding environment and present my report in html format (rendered from '.Rmd'). R packages, such as 'dplyr','lubridate' and ggplot2 are used in data manipulation, transformation and visualization. <br>
+
+I also use 'Apache spark', a distributive computing engine in the analysis, as the dataset being considered is large given the available computing resource. However, I still use a sample from the original, because the rendering of .Rmd file failed when all 12-month (2023-03 to 2024-02) data was used. <br> 
+
+**Random sampling to narrow the scope of data**
+
+Data is sampled from multiple files, ensuring randomness, by a categorical variable, 'member-casual' in equal proportions. The sampleBy() function performs stratified sampling and ensures each row in the subgroups, 'member' and 'casual', has the same probability of being selected in the sample.
+
+The proportion parameter indicates the proportion of rows to be selected from each subgroup.The proportion can be varied to ensure the optimum use of data and computing resource. <br>
+
+*Note:* Setting larger proportion values resulted in slow and incomplete rendering of the .Rmd file into html format.<br>
+
+
+**List of packages used**
+```{r warning=FALSE,message=FALSE}
+knitr::opts_chunk$set(echo =FALSE)
+library(sparklyr)
+library(dplyr)
+library(ggplot2)
+library(gridExtra)
+library(tidyverse)
+library(lubridate)
+library(patchwork)
+```
+<br><br>
+
+**Configuration of Spark engine**
+<br>
+I use sparklyr, which is an interface between R and Apache Spark. <br>
+
+```{r warning=FALSE,message=FALSE}
+## Configuration of sparklyr
+ conf<-list()
+ conf$`sparklyr.cores.local`<-8
+ conf$`sparklyr.shell.driver-memory`<- '16G'
+ conf$`sparklyr.momory.fraction`<- 0.8
+```
+
+
+``` {r warning=FALSE,message=FALSE}
+## Connecting to the spark cluster
+sc<- spark_connect(
+        master="local",
+        version = "3.4.2",
+        config=conf
+  )
+```
+
+
+**Creating Spark Data-frame**
+
+Spark DataFrame is created using the spark_read_csv() function from the sparklyr package. The files are located in the data folder.<br>
+
+```{r warning=FALSE,message=FALSE }
+
+ sdf<-spark_read_csv(
+    sc,
+    path = "/Users/sumo/repos/01_r_project/data/tripdata/",
+    header = TRUE,
+    delimiter = ","
+)
+sdf|>count()
+```
+<br>
+
+We can see that there are 5,707,168 rows in the dataset and visualizing them in R-Studio locally is not feasible.
+
+<br>
+
+```{r warning=FALSE,message=FALSE,warning=FALSE,echo=TRUE}
+
+    spark_dataframe(sdf) %>%
+    sparklyr::invoke("stat") %>%
+    sparklyr::invoke(
+        "sampleBy",
+        "member_casual",
+        fractions=as.environment(list(
+            "member"=0.03,
+            "casual"=0.03
+        )),
+        seed=1L
+    ) %>% sparklyr::sdf_register("sampled_data")
+
+ tbl(sc,"sampled_data")|>count()
+
+```
+<br>
+
+The sample is 170980 rows long when the proportion parameter is set to 0.03. As this sample size allow smooth rendering of the document, the parameter, 0.03, is decided as appropriate. 
+
+### Plots of Population and sample data
+
+The proportions are then visualized, using column plots, to see if it reflects the true proportions of memebers and casuals in the original data.<br>
+
+**Distribution of the Cyclistic's Riders by Customer-Type**
+<br>
+```{r bunch1-figs-svg, fig.height=5, fig.width=12, message=FALSE,warning=FALSE, dev='svg', out.width="100%",echo=FALSE}
+  
+# the sample reflects the original proportion of customers
+  p1<- sdf|> group_by(member_casual)|>summarise(Count=n())|>mutate(Percentage=Count/sum(Count))|>
+  ggplot(aes(x =member_casual, y = Percentage, fill = member_casual)) +
+  geom_col(width = 0.5,color = 'black')+scale_y_continuous(labels = scales::percent_format())+
+  labs(title = "Population Data", x = "Members-Casuals", y = "Percentage", fill = "Variable")
+
+  p2<-tbl(sc,"sampled_data") %>% group_by(member_casual) %>% 
+   summarise(Count = n()) %>%
+   mutate(Percentage = Count / sum(Count)) %>%
+   ggplot(aes(x = member_casual, y = Percentage, fill = member_casual)) +
+   geom_col(width = 0.5,color = 'black')+scale_y_continuous(labels = scales::percent_format())+
+  labs(title = "Sample Data", x = "Members-Casuals",y = "Percentage",fill = "Variable")
+ grid.arrange(p1,p2,ncol = 2)
+  
+```
+<br>
+
+The plots show that the sample represents the population data correctly and is not biased for either type. We can see that 'Casuals' are 36% of the total data being considered. <br>
+
+### Histograms: 'Start' and 'End' time over the period
+
+The plots show that 'ride' start-times are normally distributed over the period with higher counts of 'ride' start-times during June, July and August.<br> The bell-shaped distribution indicates that the majority of the data points are near the center, therefore, we can be sure that the statistical averages will represent the majority of data.  <br>
+
+**Histograms: 'ride' start-times over the Period**
+<br>
+```{r bunch2-figs-svg, fig.height=5, fig.width=12,message=FALSE,warning=FALSE, dev='svg',out.width="100%",echo=FALSE}
+ ## The tbl() function from the dplyr package is used to create a table object from the spark dataframe"sampled_data"
+  p3<-tbl(sc,"sampled_data") %>% 
+  select(started_at,member_casual) %>%
+  ggplot()+aes(x=as.Date(started_at))+geom_histogram(bins=25,color = 'black',fill='skyblue')+facet_grid(~member_casual)
+
+  p4<-tbl(sc,"sampled_data") %>% 
+  select(started_at,member_casual) %>%
+  ggplot()+aes(x=as.Date(started_at))+geom_boxplot(color = 'black',fill='skyblue')+facet_grid(~member_casual)
+  
+  grid.arrange(p3,p4,ncol = 2)
+  
+```
+
+<br>
+
+### Histogram: 'Start' and 'End' times over Latitudes and Longitudes
+
+The plots show that the distribution of 'start' and 'end' latitudes and longitudes are approximately normal with the presence of outliers on either end.  <br><br>
+
+```{r bunch3-figs-svg, fig.height=5, fig.width=12,message=FALSE, warning=FALSE, dev='svg', out.width="100%", echo=FALSE}
+## plot 'Start' Latitudes and Longitudes
+ 
+  p5<-tbl(sc,"sampled_data") %>% ggplot()+ aes(x = start_lat) +geom_histogram(bins =15,color = 'black', fill = 'skyblue')
+  
+  p6<-tbl(sc,"sampled_data")  %>%ggplot()+aes(x=start_lng)+geom_histogram(bins =15,color = 'black', fill = 'skyblue')
+
+## plot 'End' Latitudes and Longitudes
+  
+  p7<-tbl(sc,"sampled_data") %>% ggplot()+ aes(x = end_lat) +geom_histogram(bins =15,color = 'black', fill = 'skyblue')
+  plot_end_lat <-tbl(sc,"sampled_data") %>% ggplot()+ aes(x = end_lng) +geom_histogram(bins =15,color = 'black', fill = 'skyblue')
+  
+## tbl(sc,"sampled_data") %>% select(start_lng) %>%ggplot()+aes(x=start_lng)+geom_boxplot(color = 'black',fill='skyblue')
+  
+  grid.arrange(p5,p6,p7,plot_end_lat, ncol=4)
+```
+<br>
+
+
+## Data Processing
+
+#### Summary of Missing data and Outliers
+
+The missing values plots show that there are about 17% missing values on 'end_station_id' and 'end_station_name', about 15% on 'start_station_id' and 'start_station_name' columns. There is also a very samll proportion of missing data in 'end_lat' and 'end_lng' columns. All rows with those missing values are removed. <br>
+
+Upper and Lower bounds of 'ride_length_mins' are  -11.65 and  34.35 respectively so we exclude negative values and values greater than 34.35 of 'ride_length_in_mins'.
+
+
+``` {r bunch4-figs-svg, fig.height=6, fig.width=12,message=FALSE,warning=FALSE,dev='svg', out.width="100%", echo=FALSE}
+# Get missing data summary
+
+total_rows <- tbl(sc,"sampled_data") %>%
+              count() %>%
+              collect() %>%
+              pull(n)
+
+nas_summary <- tbl(sc,"sampled_data") %>%
+               summarise_all(~(sum(as.integer(is.na(.))) / total_rows) * 100) %>%
+               collect()
+
+nas_summary<-tidyr::pivot_longer(nas_summary, everything(), names_to = "Variable", values_to = "Count")
+
+# plot summary
+
+p8<- nas_summary %>%
+  ggplot(aes(x = Variable, y = Count, fill = Variable)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Percentage-Missing Values before",
+       x = "Variable",
+       y = "Percentage of Missing Values",
+       fill = "Variable") +
+  theme(axis.text.x = element_text(angle = 45, hjust =0.75),
+        legend.position = "none")
+
+## Cleaning data
+
+ cleaned_df<-tbl(sc,"sampled_data") |>
+ filter(!is.na(start_station_name) & 
+ !is.na(start_station_id) & 
+ !is.na(end_station_name) &  
+ !is.na(end_station_id) &  
+ !is.na(start_lat) &!is.na(start_lng) & 
+ !is.na(end_lat) & !is.na(end_lng) & 
+ !(started_at > ended_at) & 
+ !(started_at == ended_at))
+
+## feature engineering started_at and ended_at columns to calculate 'ride_length_mins', a quantitative metric, to be 
+## used in the analysis. Date time functions in Spark-R package are used.
+ 
+ cleaned_df<-cleaned_df|> 
+    mutate(start_date_time = to_timestamp(started_at),
+           end_date_time = to_timestamp(ended_at),
+           ride_hour = hour(start_date_time),
+           ride_weekday=day(start_date_time),
+           date_timestamp = 
+           from_utc_timestamp(timestamp(start_date_time), "UTC"),day_week = date_format(date_timestamp,"E"),
+           ride_year = year(start_date_time),
+           ride_month = month(start_date_time)) %>%
+    mutate(ride_length_mins = 
+          (unix_timestamp(end_date_time) - unix_timestamp(start_date_time))/60) 
+
+ quantiles<-cleaned_df|> sdf_quantile(
+   column = "ride_length_mins",
+   probabilities = c(0.25,0.5, 0.75),
+   relative.error = 0.01
+ )
+ IQR= quantiles[3]-quantiles[1]
+ 
+ lower_bound = quantiles[1] - (1.5 * IQR)
+ upper_bound = quantiles[3] + (1.5 * IQR)
+ 
+ names(upper_bound)<-c("upper-bound")
+ names(lower_bound)<-c("lower-bound")
+ 
+ print(c(quantiles,lower_bound,upper_bound))
+ 
+  cleaned_df<-  cleaned_df|>filter(!is.na(ride_length_mins) & (!ride_length_mins<0) & (!ride_length_mins>34.35))
+```
+
+```{r fig.height=6, fig.width=12,message=FALSE,warning=FALSE,dev='svg', out.width="100%", echo=FALSE}
+ ## Recalculate summary and plot
+  total_rows <- cleaned_df %>%
+              count() %>%
+              collect() %>%
+              pull(n)
+
+  summary <- cleaned_df %>%
+               summarise_all(~(sum(as.integer(is.na(.))) / total_rows) * 100) %>%
+               collect()
+
+  summary<-tidyr::pivot_longer(summary, everything(), names_to = "Variable", values_to = "Count")
+
+## Plot to ensure clean data
+  p9<-summary %>%
+  ggplot(aes(x = Variable, y = Count, fill = Variable)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Percentage-Missing Values after",
+       x = "Variable",
+       y = "Percentage of Missing Values",
+       fill = "Variable") +
+  theme(axis.text.x = element_text(angle = 45, hjust =0.75),
+        legend.position = "none")
+
+
+  grid.arrange(p8,p9 ,ncol = 2)
+
+```
+<br>
+
+<br><br>
+
+
+### Feature Engineering timestamp columns
+
+Quantitative metric, 'ride_length_mins', are created converting  time stamp column 'started_at'. Also the date time object columns such as hour, day and month are created to improve granularity. Date time functions in Spark-R package are applied to 'started_at' and 'ended_at' columns.
+
+```{r fig.height=5, fig.width=12,message=FALSE,warning=FALSE,dev='svg', out.width="100%", echo=FALSE}
+## plot ride_length_mins
+   plot_ride_lenghth<-cleaned_df|>
+   ggplot(aes(x=log(ride_length_mins)))+geom_histogram(bins=25,color = 'black',fill='skyblue')+
+   labs(x = "Log(ride_length_mins)", y = "Count", title = "Histogram of Ride Duration of Cyclistic Customers") 
+
+   ride_length_by_customer<-cleaned_df|>
+   ggplot(aes(x=log(ride_length_mins)))+
+   geom_histogram(bins=25,color = 'black')+
+   labs(x = "Log(ride_length_mins)", y = "Count", title = "Histogram of Ride Duration By Customer-types")+
+   facet_grid(~member_casual)
+  
+   
+   grid.arrange( plot_ride_lenghth, ride_length_by_customer, ncol = 2)
+
+```
+<br><br>
+
+
+## Analysis: How 'Casuals' and 'Members' ride 'Cyclistic' bikes differently? 
+
+#### What is the Average Ride duration of 'Casuals' and 'Members'? 
+
+We can see that 'Casuals' ride longer than members on average.This could possibly be due to a higher percentage riders among casual riders in **[9 mins,16.4mins]** bracket.(*Calculated as exp(2.2)=9.025013 and exp(2.8)= 16.44465*).
+<br><br>
+This insight should encourage the marketing team to highlight 'discounts on longer rides to members', when designing a campaign strategy. The team can communicate this fact to 'Casual riders' through digital channels and communicate how they would save on 'long term' fares if they became members.<br>
+
+The insight of the higher presence of 'Casual riders' in **[9 mins, 16.4 mins]** bracket seems interesting and demands further exploration. However, we do not have data on their demographics so we will not know much about the reasons 'Casuals' ride longer.
+<br><br>
+
+*Because the histogram of the distributions of 'ride_length' is skewed to the left, i.e. most of the rides are  on the 'longer   duration' brackets, we calculate the 'median' (not mean) to compare the behavior of the riders in terms of how  long on average they ride.*
+
+**Average Ride-length in Mins between Customer Types**
+<br>
+ 
+```{r bunch6-figs-svg, fig.height=5, fig.width=13,message=FALSE,warning=FALSE,dev='svg',out.width="100%",echo=FALSE}
+ ## Does the average ride length vary by customer type?
+ ## if casuals ride longer on an average, it can be highlighted in media content.
+ 
+
+p12<-cleaned_df|>group_by(member_casual)|>
+     summarise(Average_ride_length_mins=median(ride_length_mins))|>
+     ggplot(aes(x=member_casual,y=Average_ride_length_mins,fill=member_casual)) +
+     geom_col(width = 0.3)+
+  labs(x = "Customer", y = "Average Ride Duration", title = "Average(median) Ride_length-Mins between Customer-types") 
+
+p13<-cleaned_df|>group_by(member_casual) |>
+    select(ride_length_mins, member_casual) |>
+    ggplot(aes(x = log(ride_length_mins), fill = member_casual)) +
+    geom_density(alpha = 0.5) +
+    labs(x = "log(Ride Length)", y = "Percentage", title = "Ride_length Density Plot between Customer-types")+  
+    scale_y_continuous(labels = scales::percent_format())
+
+grid.arrange(p12, p13, ncol = 2)
+
+``` 
+<br> <br>
+
+#### What bikes are popular among the Customers? 
+
+The plots show that 'Classic' and 'electric' are the most popular among both 'Casuals' and 'Members'. The marketing team can highlight the cheaper rates the existing 'Members' enjoy on those bikes and encourage riders to convert, offering discounts on existing member rates for a limited duration.
+<br>
+
+**Bike Rides within Customer Types**
+<br>
+```{r bunch7-figs-svg, fig.height=5, fig.width=12,message=FALSE,warning=FALSE,dev='svg',out.width="100%",echo=FALSE}
+p14<-cleaned_df |> 
+    group_by(member_casual,rideable_type) |> 
+    summarise(Count=n()) |> 
+    mutate(Percentage = Count / sum(Count))|>
+    ggplot(aes(x=rideable_type,y=Percentage,fill=member_casual))+
+    geom_col(width=0.5,position = "dodge")+
+    labs(x = "rideable_type", y = "Percentage", title = "Percentage of Rides by Bike Type Within Customer types") +
+    scale_y_continuous(labels = scales::percent_format()) 
+    plot(p14)
+
+```
+<br><br>
+ 
+#### What Seasons or Months get the highest traffic?
+
+We can see that greater percentages of Casuals ride in the months June, July, August and September and summer is the busiest season. Therefore, seasonal promotions or discounts or highlighting how 'Members' save by annual subscription should be effective in converting 'casuals' into becoming members.<br> 
+
+However, We can further try and see  how the traffic varies by months, days of the week and hours so that there is right timing of marketing strategy.
+
+<br><br>
+
+ **Traffic Volumes by Seasons and Months**
+ <br>
+ 
+```{r fig.height=5, fig.width=12,message=FALSE,warning=FALSE,dev='svg',out.width="100%",echo=FALSE}
+## How does the number of riders vary by seasons within and between the customer types?
+plot_saesons<-cleaned_df %>%
+    group_by(member_casual, ride_month) %>%
+    summarise(Count = n()) %>%
+    mutate(Percentage = Count / sum(Count)) %>%
+    mutate(season = ifelse(ride_month %in% c("12", "1", "2"), "Winter", ifelse(ride_month %in% c("3", "4", "5"), "Spring",
+                                                                          ifelse(ride_month%in% c("6", "7", "8"), "Summer", "Fall")))) |> ggplot(aes(x = as.factor(season), y = Percentage, fill = member_casual)) +
+    geom_col(width=0.5,position = "dodge") +
+    labs(x = "Season", y = "Percentage", title = "Percentage of Rides by seasons Within Customer types") 
+
+plot_months<-cleaned_df %>%
+    group_by(member_casual, ride_month) %>%
+    summarise(Count = n()) %>%
+    mutate(Percentage = Count / sum(Count)) %>%
+    ggplot(aes(x = as.factor(ride_month), y = Percentage, fill = member_casual)) +
+    geom_col(width=0.5,position = "dodge") +
+    labs(x = "Month", y = "Percentage", title = "Percentage of Rides by Month Within customer types") +
+    scale_y_continuous(labels = scales::percent_format()) 
+
+grid.arrange(plot_saesons, plot_months, ncol = 2)
+
+
+```
+<br><br>
+
+ **Traffic Volumes by Hours and Days of the Week**
+ <br>
+  We can see that, 'Casuals' ride in greater percentage on weekends and between '10 am' to '3 pm' and '6 pm' to '10 pm'. They 
+  will be interested to convert if the marketing campaign highlights how existing 'Members' receive unlimited or cheaper rides 
+  during those hours.
+ 
+``` {r bunch5-figs-svg, fig.height=5, fig.width=12,message=FALSE,warning=FALSE,dev='svg',out.width="100%",echo=FALSE}
+## How does the number of riders vary over the days of the week?
+  
+ day_order <- c("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+ 
+    p10<- cleaned_df |> 
+    mutate(date_timestamp = from_utc_timestamp(timestamp(started_at), "UTC"),day_week = date_format(date_timestamp, "E")) |>
+    group_by(member_casual,day_week) |> summarise(Count=n()) |> mutate(Percentage = Count / sum(Count))|>
+    select(member_casual,day_week,Percentage) |>
+    ggplot(aes(x=factor(day_week,levels=day_order),y=Percentage,fill=member_casual))+
+    geom_col(width=0.5)+
+    labs(x = "Day of the Week", y = "Percentage", title = "Percentage of Rides by Day of the Week Within Customer types") #+
+    #facet_grid(~member_casual)
+ 
+## How does the number of riders vary over the hours of a day?
+    
+    p11<- cleaned_df |> 
+    group_by(member_casual,ride_hour) |> 
+    summarise(Count=n()) |> 
+    mutate(Percentage = Count / sum(Count))|>
+    ggplot(aes(x=ride_hour,y=Percentage,fill=member_casual))+
+    geom_col(position = "dodge")+
+    labs(x = "ride_hour", y = "Percentage", title = "Percentage of Rides by Hour Within Customer types") +
+    scale_y_continuous(labels = scales::percent_format()) 
+  grid.arrange(p10, p11, ncol = 2)
+  
+``` 
+<br><br>
+
+#### How Customers are Distributed By Start and End Locations?
+
+The longitude and latitude plots show that 'Casual' start and end locations are more scattered than that of members'.
+This insight suggests that geo-targeting advertisement strategies should be more appropriate in reaching 'Casuals when communicating campaign messages.
+
+```{r bunch9-figs-svg, fig.height=5, fig.width=12,message=FALSE, warning=FALSE,dev='svg',out.width="100%",echo=FALSE}
+# How are the Cyclistic’s customers distributed across start and end locations?
+# Does the marketing team need to take 'start' and 'end' locations into account in designing campaigns? Are there distinct
+# clusters of 'Casuals'  in some locations that determines the success of campaigns? Should marketing campaigns target those locations to be more effective?
+p16<-cleaned_df|> select(start_lng,start_lat,member_casual)|>ggplot(aes(x=start_lng,y=start_lat,color=member_casual))+geom_point(alpha=0.5)+ labs(x = "Start Longitudes", y = "Start Latitudes", title = "Distribution of customers by Start Locations")#+facet_grid(~member_casual)
+
+p17<-cleaned_df|> select(end_lng,end_lat,member_casual)|>ggplot(aes(x=end_lng,y=end_lat,color=member_casual))+geom_point(alpha=0.5)+labs(x = "End Longitudes", y = "End Latitudes", title = "Distribution of customers by End Locations") #+ facet_grid(~member_casual)
+
+ grid.arrange(p16,p17, ncol = 2)
+```
+<br>
+
+<br><br>
+
+#### Are there any clusters of 'Casuals'?
+
+The following cluster plots show that "Members' and "Casuals' are similar in many ways when it comes to 'ride durations'. The knowledge of clusters among 'Casuals' offers helpful insights to the marketing team.<br>
+
+The team can tailor marketing messages, offers, and campaigns to each segment's preferences, needs, and behaviors. For example, 'Casuals' who fall in the '10 mins to 20 mins' brackets would be encouraged to convert if they see that, by becoming members, they can save on their ride-fares. *(assumption: the members pay cheaper rates than the 'Casuals', when it comes to riding longer duration.)* <br>
+
+*Note:- The sample size  is further reduced, by random sampling, to carry out the cluster analysis. 5% of the sample data was randomly selected for smooth rendering of the file *
+
+```{r fig.height=5, fig.width=12,message=FALSE, warning=FALSE,dev='svg',out.width="100%",echo=FALSE}
+################
+    spark_dataframe(cleaned_df) %>%
+    sparklyr::invoke("stat") %>%
+    sparklyr::invoke(
+        "sampleBy",
+        "member_casual",
+        fractions=as.environment(list(
+            "member"=0.05,
+            "casual"=0.05
+        )),
+        seed=1L
+    ) %>% sparklyr::sdf_register("data1")
+
+
+# #####
+# 
+c<-ml_kmeans(tbl(sc,"data1"), k=3, features = c("ride_id", "ride_length_mins"))
+sdf_centers <- sdf_copy_to(sc, c$centers, name = "cluster_centers")
+prediction = collect(ml_predict(c, tbl(sc,"data1")))
+
+ggplot(prediction, aes(x = ride_length_mins, y = ride_id, color = factor(prediction))) +
+    geom_point() +
+    labs(
+        x = "Ride Length (minutes)",
+        y = "Ride ID",
+        color = "Predicted Cluster",
+        title = "Cluster Prediction of Ride Lengths"
+    )+facet_grid(~member_casual)
+```
+
+The sample was further
+
+
+
+## Recommedations Based on the Visual Analytics
+
+From the Visualization above, we can see that the success of marketing campaign will be determined by various factors such as 
+effective messaging, timing, selection of digital channels and understanding customer preferences.
+
+**Top three recommendations based on the analysis**<br>
+
+1. Communicate effective Value Proposition: Highlight the additional benefits members enjoy by purchasing annual subscriptions, such as unlimited access to both classic and electric bikes, discounted rates for longer rides, priority access during peak times, and other perks such as free guided tours around the city during the weekends and the Summer.<br>
+
+2. Choose effective Communication Channels: Choose the most effective channels to reach casual riders, such as social media platforms, targeted online ads, local events and sponsorships. Partner with relevant businesses or organizations such as local restaurants and entertainment venues to create added value.<br>
+
+3. Account for Seasonality and Time-specificity: Launch the campaign during peak riding seasons, weekends and during the summer months when casual riders are most active. The success of the campaign will very much depend on how efficintly and effectively the team can communicate the value propostion. Highlight perks such as priority access to bikes during busy periods or unlimited rides on weekends to 'Casual' riders who frequently ride during these times.
+
+<br>
+<br>
+
+```{r}
+ sessionInfo()
+```
